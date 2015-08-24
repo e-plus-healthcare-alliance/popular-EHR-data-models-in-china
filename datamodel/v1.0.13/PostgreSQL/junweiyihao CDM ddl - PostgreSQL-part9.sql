@@ -224,3 +224,19 @@ CREATE TABLE DIAGNOSIS (
 )
 ;
 
+
+/**
+9.7 手术记录
+此表为诊断编目所设，由病案编目子系统录入。医生所下的每个诊断可以从不同的角度赋予多个分类编码。如肿瘤，既可以按部位编码，也可以按形态学编码。
+数据增长量略大于诊断记录的增长量。长期在线保存
+主键： 
+**/
+CREATE TABLE OPERAITON (
+    PATIENT_ID				VARCHAR(10)		NOT NULL,-- 病人标识号  非空
+    VISIT_ID				VARCHAR(2)		NOT NULL,-- 病人本次住院标识 病人每次住院，分配一个不同的标识，与病人标识一起，构成一个病人一次住院的唯一标识。可使用住院次数的绝对值或相对值  
+    DIAGNOSIS_TYPE				VARCHAR(1)		NOT NULL,-- 诊断类别  反映入院、出院、门诊、病理诊断等，见4.4 诊断类别字典
+    DIAGNOSIS_NO				VARCHAR(2)		NOT NULL,-- 诊断序号  依重要次序，由小到大排列
+    DIAGNOSIS_CODE		    VARCHAR(16)		NULL--诊断代码  使用ICD9 见4.1 疾病字典
+)
+;
+
