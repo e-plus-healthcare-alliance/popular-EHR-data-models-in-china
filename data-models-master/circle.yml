@@ -1,0 +1,88 @@
+machine:
+  services:
+    - docker
+  python:
+    version: 2.7.11
+  environment:
+    # Make CircleCI specific environment variables more generic.
+    BUILD_NUM: "${CIRCLE_BUILD_NUM}"
+    COMMIT_SHA1: "${CIRCLE_SHA1}"
+    BRANCH: "${CIRCLE_BRANCH}"
+    USER_NAME: "${CIRCLE_PROJECT_USERNAME}"
+    REPO_NAME: "${CIRCLE_PROJECT_REPONAME}"
+    VERSION: "${CIRCLE_BRANCH}_${CIRCLE_BUILD_NUM}_${CIRCLE_SHA1:0:8}"
+    ARTIFACT_DIR: "${CIRCLE_ARTIFACTS}"
+    DMSA_TEST_BRANCH: "master"
+    DMSA_TEST_SERVICE: "http://127.0.0.1:8123/"
+    DMSA_TEST_CONTAINER_URL: "http://127.0.0.1:5000/"
+    PULL_NUM: "${CIRCLE_PR_NUMBER}"
+    PULL_REPO: "${CIRCLE_PR_REPONAME}"
+    PULL_USER: "${CIRCLE_PR_USERNAME}"
+
+checkout:
+  post:
+    # Checkout dmsa.
+    - git clone https://github.com/chop-dbhi/data-models-sqlalchemy.git
+      ~/data-models-sqlalchemy
+    - cd ~/data-models-sqlalchemy; git checkout ${DMSA_TEST_BRANCH}
+
+dependencies:
+  cache_directories:
+    # Add a cache directory to save docker images to.
+    - "~/docker"
+    # Add a cache directory for the jq install.
+    - "~/bin"
+  override:
+    # Install jq for command line JSON parsing.
+    - mkdir -p ~/bin; if [[ ! -e ~/bin/jq ]]; then curl -L -o ~/bin/jq
+      http://stedolan.github.io/jq/download/linux64/jq &&
+      chmod 0755 ~/bin/jq; fi
+    # Install dmsa app.
+    - cd ~/data-models-sqlalchemy; pip install -r requirements.txt;
+      python setup.py install
+    # Install docker-py for container testing.
+    - pip install docker-py
+    # Load dmsa image if it exists in cache and pull it.
+    - if [[ -e ~/docker/dmsa.tar ]]; then docker load --input
+      ~/docker/dmsa.tar; fi; docker pull
+      "dbhi/data-models-sqlalchemy:${DMSA_TEST_BRANCH/master/latest}"
+    # Load data-models-service (dms) image if it exists in cache and pull it.
+    - if [[ -e ~/docker/dms.tar ]]; then docker load --input
+      ~/docker/dms.tar; fi; docker pull dbhi/data-models
+    # Save dmsa image to cache for next build.
+    - mkdir -p ~/docker; docker save
+      "dbhi/data-models-sqlalchemy:${DMSA_TEST_BRANCH/master/latest}" > ~/docker/dmsa.tar
+    # Save dms image.
+    - docker save dbhi/data-models > ~/docker/dms.tar
+
+test:
+  override:
+    # Run the dms service locally using the data-models version being tested.
+    # For pull requests, we need to do some fancy github API work...
+    - if [ -z "${PULL_NUM}" ]; then 
+      docker run -d -p "8123:8123" --name dms dbhi/data-models
+      -path /opt/repos -repo
+      "https://github.com/${USER_NAME}/${REPO_NAME}@${BRANCH}" && sleep 10; else
+      docker run -d -p "8123:8123" --name dms dbhi/data-models
+      -path /opt/repos -repo
+      "https://github.com/${PULL_USER}/${PULL_REPO}@$(curl -s https://api.github.com/repos/${USER_NAME}/${REPO_NAME}/pulls/${PULL_NUM} | jq --raw-output '.head.ref')" &&
+      sleep 10; fi
+    # Simple verification of DMS
+    - curl -s http://127.0.0.1:8123/?format=json | grep --silent 'Data Models Service' || (docker logs dms; false)
+    # Run the dmsa container locally.
+    - docker run -d -p "5000:80" --name dmsa --link dms:dms
+      "dbhi/data-models-sqlalchemy:${DMSA_TEST_BRANCH/master/latest}" gunicorn
+      --bind="0.0.0.0:80" --workers=4
+      'dmsa.service:build_app("http://dms:8123/")'; sleep 10
+    # Simple verification of DMSA
+    - curl -s http://127.0.0.1:5000/ | grep --silent 'Data Models DDL and ERDs' || (docker logs dmsa; false)
+    # Integration testing of the running container service.
+    - cd ~/data-models-sqlalchemy; nosetests dmsa.tests.container_integration
+    # Save DDL to artifact directory.
+    - mkdir -p "${ARTIFACT_DIR}/ddl"
+    - cd ~/data-models-sqlalchemy; python dmsa/tests/output_all_ddl.py
+      "${ARTIFACT_DIR}/ddl/dms_${VERSION//\//_}_all_ddl.sql"
+    # Save DMS and DMSA logs to artifact directory.
+    - mkdir -p "${ARTIFACT_DIR}/log"
+    - docker logs dms > "${ARTIFACT_DIR}/log/dms.log" 2>&1
+    - docker logs dmsa > "${ARTIFACT_DIR}/log/dmsa.log" 2>&1
